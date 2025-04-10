@@ -51,8 +51,11 @@ resource "google_cloudfunctions2_function" "validator_fn" {
   }
 
   event_trigger {
-    event_type = "google.cloud.storage.object.v1.finalized"
-    resource   = google_storage_bucket.csv_bucket.name
+  event_type     = "google.cloud.storage.object.v1.finalized"
+  trigger_region = var.region
+  event_filters {
+    attribute = "bucket"
+    value     = google_storage_bucket.csv_bucket.name
   }
 }
 
@@ -60,4 +63,5 @@ resource "google_workflows_workflow" "csv_pipeline" {
   name            = "csv-pipeline"
   region          = var.region
   source_contents = file("${path.module}/workflows/csv_pipeline.yaml")
+
 }
