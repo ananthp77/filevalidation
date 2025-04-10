@@ -1,0 +1,5 @@
+project_id   = "your-project-id"
+region       = "europe-west2"
+bucket_name  = "your-bucket-name"
+dataset_id   = "csv_data"
+table_id     = "validated_records"

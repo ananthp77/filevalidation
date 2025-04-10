@@ -1,10 +1,5 @@
-variable "project_id" {
-  description = "GCP Project ID"
-  type        = string
-}
-
-variable "region" {
-  description = "GCP Region"
-  type        = string
-  default     = "europe-west2"  # London
-}
+variable "project_id" {}
+variable "region" {}
+variable "bucket_name" {}
+variable "dataset_id" {}
+variable "table_id" {}

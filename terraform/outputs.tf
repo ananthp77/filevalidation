@@ -9,7 +9,3 @@ output "bigquery_dataset" {
 output "cloud_function_name" {
   value = google_cloudfunctions2_function.validator_fn.name
 }
-
-output "workflow_name" {
-  value = google_workflows_workflow.csv_pipeline.name
-}

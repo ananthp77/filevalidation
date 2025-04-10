@@ -1,18 +1,38 @@
-import csv, io
-from google.cloud import storage
-from google.cloud.workflows.executions_v1beta import ExecutionsClient
+import csv
+import os
+from google.cloud import bigquery
 
-def validate_csv(event, context):
-    client = storage.Client()
-    bucket = client.bucket(event['bucket'])
-    blob = bucket.blob(event['name'])
-    content = blob.download_as_text()
+REQUIRED_COLUMNS = ["id", "name", "email"]
 
-    reader = csv.DictReader(io.StringIO(content))
+def validate_row(row):
+    return all(col in row for col in REQUIRED_COLUMNS)
+
+def upload_to_bigquery(rows, dataset_id, table_id):
+    client = bigquery.Client()
+    table_ref = f"{client.project}.{dataset_id}.{table_id}"
+    errors = client.insert_rows_json(table_ref, rows)
+    if errors:
+        raise RuntimeError(f"BigQuery insert errors: {errors}")
+
+def process_csv(bucket_name, file_name):
+    from google.cloud import storage
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(file_name)
+
+    data = blob.download_as_text().splitlines()
+    reader = csv.DictReader(data)
+
+    valid_rows = []
     for row in reader:
-        if not row.get("id") or not row.get("name"):
-            raise ValueError("Validation failed: Missing required fields.")
+        if validate_row(row):
+            valid_rows.append(row)
 
-    executions_client = ExecutionsClient()
-    parent = f"projects/YOUR_PROJECT_ID/locations/YOUR_REGION/workflows/csv-pipeline"
-    executions_client.create_execution(request={"parent": parent})
+    if valid_rows:
+        upload_to_bigquery(valid_rows, os.environ["DATASET_ID"], os.environ["TABLE_ID"])
+
+def entry_point(event, context):
+    bucket = event["bucket"]
+    name = event["name"]
+    print(f"Processing file: {name} from bucket: {bucket}")
+    process_csv(bucket, name)

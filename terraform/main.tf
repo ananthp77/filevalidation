@@ -3,80 +3,45 @@ provider "google" {
   region  = var.region
 }
 
-# GCS Bucket for raw files and Cloud Function source
 resource "google_storage_bucket" "csv_bucket" {
-  name     = "${var.project_id}-csv-bucket"
+  name     = var.bucket_name
   location = var.region
 }
 
-# Upload Cloud Function ZIP to GCS
-resource "google_storage_bucket_object" "cloudfunction_zip" {
-  name   = "cloudfunction/cloudfunction-source.zip"
-  bucket = google_storage_bucket.csv_bucket.name
-  source = "../cloudfunction/cloudfunction-source.zip"
-}
-
-# BigQuery Dataset
 resource "google_bigquery_dataset" "data_dataset" {
-  dataset_id = "data_pipeline"
+  dataset_id = var.dataset_id
   location   = var.region
 }
 
-# BigQuery Tables
-resource "google_bigquery_table" "staging_table" {
+resource "google_bigquery_table" "data_table" {
   dataset_id = google_bigquery_dataset.data_dataset.dataset_id
-  table_id   = "staging"
-  schema     = file("./bq/staging_schema.json")
-  deletion_protection = false
+  table_id   = var.table_id
+
+  schema = jsonencode([
+    { name = "id", type = "STRING", mode = "REQUIRED" },
+    { name = "name", type = "STRING", mode = "NULLABLE" },
+    { name = "email", type = "STRING", mode = "NULLABLE" }
+  ])
 }
 
-resource "google_bigquery_table" "final_table" {
-  dataset_id = google_bigquery_dataset.data_dataset.dataset_id
-  table_id   = "final"
-  schema     = file("./bq/final_schema.json")
-  deletion_protection = false
+resource "google_storage_bucket_object" "function_zip" {
+  name   = "function_source.zip"
+  bucket = google_storage_bucket.csv_bucket.name
+  source = "${path.module}/cloudfunction.zip"
 }
 
-# Cloud Function (2nd Gen)
-resource "google_cloudfunctions2_function" "validator_fn" {
-  name     = "csv-validator"
-  location = var.region
+resource "google_cloudfunctions_function" "csv_handler" {
+  name        = "csv-handler"
+  description = "Triggered when CSV lands in GCS, validates and loads to BQ"
+  runtime     = "python310"
+  entry_point = "entry_point"
+  source_archive_bucket = google_storage_bucket.csv_bucket.name
+  source_archive_object = google_storage_bucket_object.function_zip.name
+  trigger_bucket = google_storage_bucket.csv_bucket.name
+  region      = var.region
 
-  build_config {
-    runtime     = "python310"
-    entry_point = "validate_csv"
-    source {
-      storage_source {
-        bucket = google_storage_bucket.csv_bucket.name
-        object = google_storage_bucket_object.cloudfunction_zip.name
-      }
-    }
+  environment_variables = {
+    DATASET_ID = var.dataset_id
+    TABLE_ID   = var.table_id
   }
-
-  service_config {
-    min_instance_count = 0
-    max_instance_count = 1
-    available_memory   = "256M"
-    timeout_seconds    = 60
-    ingress_settings   = "ALLOW_ALL"
-    environment        = "GEN_2"
-  }
-
-  event_trigger {
-    event_type     = "google.cloud.storage.object.v1.finalized"
-    trigger_region = var.region
-    event_filters {
-      attribute = "bucket"
-      value     = google_storage_bucket.csv_bucket.name
-    }
-  }
-}
-
-# Workflows definition
-resource "google_workflows_workflow" "csv_pipeline" {
-  name     = "csv-pipeline"
-  region   = var.region
-  description = "Load CSV, deduplicate, clean, and merge"
-
-  source_contents = file("${path.module}/workflows/csv_pipeline.yaml")
 }
