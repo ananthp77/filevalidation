@@ -1,38 +1,92 @@
-import csv
+import functions_framework
+from google.cloud import bigquery, storage
 import os
-from google.cloud import bigquery
+from datetime import datetime
 
-REQUIRED_COLUMNS = ["id", "name", "email"]
+DEFAULT_DATE = "1700-01-01"
+def transform_data(row):
+    try:
+        if not is_valid_date(row["signup_date"]):
+            row["signup_date"] = DEFAULT_DATE
+        if not is_valid_date(row["last_login"]):
+            row["last_login"] = DEFAULT_DATE
+        row["purchase_amount"] = abs(float(row["purchase_amount"]))
+    except Exception as e:
+        print(f"Error transforming row {row}: {str(e)}")
+    return row
 
-def validate_row(row):
-    return all(col in row for col in REQUIRED_COLUMNS)
+def is_valid_date(date_str):
+    try:
+        datetime.strptime(date_str, '%Y-%m-%d')
+        return True
+    except ValueError:
+        return False
 
-def upload_to_bigquery(rows, dataset_id, table_id):
-    client = bigquery.Client()
-    table_ref = f"{client.project}.{dataset_id}.{table_id}"
-    errors = client.insert_rows_json(table_ref, rows)
-    if errors:
-        raise RuntimeError(f"BigQuery insert errors: {errors}")
-
-def process_csv(bucket_name, file_name):
-    from google.cloud import storage
+@functions_framework.cloud_event
+def gcs_trigger(cloud_event):
+    file = cloud_event.data["name"]
+    bucket = cloud_event.data["bucket"]
+    dataset = os.environ["BQ_DATASET"]
+    staging_table = os.environ["STAGING_TABLE"]
+    procedure = os.environ["BQ_PROCEDURE"]
+    uri = f"gs://{bucket}/{file}"
+    bq_client = bigquery.Client()
     storage_client = storage.Client()
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(file_name)
+    schema = [
+        bigquery.SchemaField("id", "INTEGER", mode="REQUIRED"),
+        bigquery.SchemaField("name", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("email", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("age", "INTEGER", mode="REQUIRED"),
+        bigquery.SchemaField("country", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("signup_date", "DATE", mode="REQUIRED"),
+        bigquery.SchemaField("last_login", "DATE", mode="REQUIRED"),
+        bigquery.SchemaField("status", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("purchase_amount", "FLOAT", mode="REQUIRED"),
+        bigquery.SchemaField("membership_level", "STRING", mode="REQUIRED"),
+    ]
+    bucket = storage_client.bucket(bucket)
+    blob = bucket.blob(file)
+    content = blob.download_as_text()
+    rows = []
+    lines = content.splitlines()
 
-    data = blob.download_as_text().splitlines()
-    reader = csv.DictReader(data)
+    for line in lines[1:]:
+        row_data = line.split(",")
+        transformed_row = transform_data({
+            "id": row_data[0],
+            "name": row_data[1],
+            "email": row_data[2],
+            "age": row_data[3],
+            "country": row_data[4],
+            "signup_date": row_data[5],
+            "last_login": row_data[6],
+            "status": row_data[7],
+            "purchase_amount": row_data[8],
+            "membership_level": row_data[9],
+        })
+        rows.append(transformed_row)
 
-    valid_rows = []
-    for row in reader:
-        if validate_row(row):
-            valid_rows.append(row)
 
-    if valid_rows:
-        upload_to_bigquery(valid_rows, os.environ["DATASET_ID"], os.environ["TABLE_ID"])
+    table_id = f"{bq_client.project}.{dataset}.{staging_table}"
+    '''job_config = bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.CSV,
+        schema=schema,
+        skip_leading_rows=1,
+        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,  # Or WRITE_TRUNCATE, depending on your use case
+    )'''
+    job_config = bigquery.LoadJobConfig(
+        schema=schema,
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+    )
 
-def entry_point(event, context):
-    bucket = event["bucket"]
-    name = event["name"]
-    print(f"Processing file: {name} from bucket: {bucket}")
-    process_csv(bucket, name)
+
+    load_job = bq_client.load_table_from_json(rows, table_id, job_config=job_config)
+    load_job.result()
+
+    print(f"Loaded data into {table_id}.")
+
+    if procedure:
+        query = f"CALL `{dataset}.{procedure}`();"
+        query_job = bq_client.query(query)
+        query_job.result()
+        print("Stored procedure executed.")
